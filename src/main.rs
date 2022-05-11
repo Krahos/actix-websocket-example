@@ -76,7 +76,7 @@ impl Actor for MyWs {
 
 impl StreamHandler<String> for MyWs {
     fn handle(&mut self, msg: String, ctx: &mut Self::Context) {
-        ctx.pong(msg.as_bytes());
+        ctx.text(msg);
     }
 }
 
