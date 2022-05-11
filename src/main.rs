@@ -1,12 +1,12 @@
-use std::{iter, net::TcpListener, sync::Arc, thread, time::Duration};
+use std::{net::TcpListener, thread, time::Duration};
 
-use actix::{Actor, AsyncContext, StreamHandler};
+use actix::{Actor, AsyncContext, SpawnHandle, StreamHandler};
 use actix_web::{
     web::{self, Data, Payload},
     App, Error, HttpRequest, HttpResponse, HttpServer,
 };
-use actix_web_actors::ws;
-use async_stream::stream;
+use actix_web_actors::ws::{self};
+
 use tokio::sync::watch::{channel, Receiver};
 
 #[actix_web::main]
@@ -17,25 +17,32 @@ async fn main() -> std::io::Result<()> {
     // Spawn sender thread.
     let _handle = thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(2));
+        println!("Generated a message");
         sender
             .send(Message { int: 3 })
             .expect("Failed to write to channel");
+        println!("Sent a message");
     });
 
     // Define server.
     let listener = TcpListener::bind("127.0.0.1:5568")?;
 
-    let receiver = Data::new(receiver);
+    let app_state = Data::new(AppState { receiver });
     let _server = HttpServer::new(move || {
         App::new()
             .route("/", web::get().to(index))
-            .app_data(receiver.clone())
+            .app_data(app_state.clone())
     })
     .listen(listener)?
     .run()
     .await;
 
     Ok(())
+}
+
+#[derive(Clone)]
+struct AppState {
+    receiver: Receiver<Message>,
 }
 
 #[derive(Debug)]
@@ -50,39 +57,46 @@ impl ToString for Message {
 }
 
 struct MyWs {
-    receiver: Arc<Receiver<Message>>,
+    receiver: Receiver<Message>,
+    spawn_handle: Option<SpawnHandle>,
 }
 
 impl Actor for MyWs {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        let stream = stream! {};
-
-        ctx.add_stream(iter::repeat(async {
-            while self.receiver.changed().await.is_ok() {
-                yield self.receiver.borrow().to_string()
-            }
+        let mut receiver = self.receiver.clone();
+        self.spawn_handle = Some(ctx.add_stream(async_stream::stream! {
+            while receiver.changed().await.is_ok() {
+                yield receiver.borrow().to_string()
+            };
         }));
     }
 }
 
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWs {
-    fn handle(&mut self, _msg: Result<ws::Message, ws::ProtocolError>, _ctx: &mut Self::Context) {
-        println!("Got a message");
+impl StreamHandler<String> for MyWs {
+    fn handle(&mut self, msg: String, ctx: &mut Self::Context) {
+        ctx.pong(msg.as_bytes());
     }
 }
 
 async fn index(
     req: HttpRequest,
     stream: Payload,
-    receiver: Data<Receiver<Message>>,
+    app_state: Data<AppState>,
 ) -> Result<HttpResponse, Error> {
     ws::start(
         MyWs {
-            receiver: receiver.into_inner(),
+            receiver: app_state.receiver.clone(),
+            spawn_handle: None,
         },
         &req,
         stream,
     )
+}
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWs {
+    fn handle(&mut self, _msg: Result<ws::Message, ws::ProtocolError>, _ctx: &mut Self::Context) {
+        print!("Received a message")
+    }
 }
