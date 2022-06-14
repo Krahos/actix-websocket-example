@@ -41,11 +41,13 @@ async fn main() -> std::io::Result<()> {
 }
 
 #[derive(Clone)]
+/// Holds the global application state.
 struct AppState {
     receiver: Receiver<Message>,
 }
 
 #[derive(Debug)]
+/// A simple message to be passed through the websocket.
 pub struct Message {
     pub int: i8,
 }
@@ -56,7 +58,9 @@ impl ToString for Message {
     }
 }
 
+/// Custom websocket type.
 struct MyWs {
+    /// This is the channel used for communication between threads.
     receiver: Receiver<Message>,
     spawn_handle: Option<SpawnHandle>,
 }
@@ -64,19 +68,33 @@ struct MyWs {
 impl Actor for MyWs {
     type Context = ws::WebsocketContext<Self>;
 
+    /// This is called when the websocket is first started, check the Actor trait for more info.
     fn started(&mut self, ctx: &mut Self::Context) {
         let mut receiver = self.receiver.clone();
-        self.spawn_handle = Some(ctx.add_stream(async_stream::stream! {
+
+        // The websocket will use this stream to read data from.
+        let data_stream = async_stream::stream! {
+            /// Reads data as it comes from the receiver channel and writes it to the stream itself
             while receiver.changed().await.is_ok() {
                 yield receiver.borrow().to_string()
             };
-        }));
+        };
+
+        // Add the stream to the websocket's context.
+        self.spawn_handle = Some(ctx.add_stream(data_stream));
     }
 }
 
 impl StreamHandler<String> for MyWs {
     fn handle(&mut self, msg: String, ctx: &mut Self::Context) {
+        // Simply publish the incoming string message to the websocket as text.
         ctx.text(msg);
+    }
+}
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWs {
+    fn handle(&mut self, _msg: Result<ws::Message, ws::ProtocolError>, _ctx: &mut Self::Context) {
+        print!("Received a message")
     }
 }
 
@@ -93,10 +111,4 @@ async fn index(
         &req,
         stream,
     )
-}
-
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWs {
-    fn handle(&mut self, _msg: Result<ws::Message, ws::ProtocolError>, _ctx: &mut Self::Context) {
-        print!("Received a message")
-    }
 }
